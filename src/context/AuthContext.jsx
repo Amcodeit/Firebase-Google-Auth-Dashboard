@@ -1,72 +1,56 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { signInWithPopup, signOut } from 'firebase/auth'
+import { onAuthStateChanged, signInWithPopup, signOut } from 'firebase/auth'
 import { auth, firebaseConfigError, googleProvider } from '../firebase'
 import { AuthContext } from './auth-context'
-import {
-  clearSession,
-  isSessionExpired,
-  loadSessionIfValid,
-  saveSession,
-  SESSION_TTL_MS,
-} from '../utils/sessionStorage'
+import { clearSession } from '../utils/sessionStorage'
 
 export function AuthProvider({ children }) {
-  const [user, setUser] = useState(() => loadSessionIfValid())
-  const isLoading = false
-
-  const expireSession = useCallback(async () => {
-    clearSession()
-    setUser(null)
-
-    try {
-      if (auth) {
-        await signOut(auth)
-      }
-    } catch {
-      // ignore sign-out errors for local session expiry
-    }
-  }, [])
+  const [user, setUser] = useState(null)
+  const [isLoading, setIsLoading] = useState(true)
 
   useEffect(() => {
-    if (!user) {
+    if (!auth) {
+      setIsLoading(false)
       return undefined
     }
 
-    const remaining = SESSION_TTL_MS - (Date.now() - user.loginAt)
+    const unsubscribe = onAuthStateChanged(auth, (firebaseUser) => {
+      if (firebaseUser) {
+        setUser({
+          name: firebaseUser.displayName ?? 'User',
+          email: firebaseUser.email ?? '',
+          uid: firebaseUser.uid,
+          photoURL: firebaseUser.photoURL,
+        })
+      } else {
+        setUser(null)
+      }
+      setIsLoading(false)
+    })
 
-    if (remaining <= 0) {
-      const timeoutId = setTimeout(() => {
-        expireSession()
-      }, 0)
-
-      return () => clearTimeout(timeoutId)
-    }
-
-    const timeoutId = setTimeout(() => {
-      expireSession()
-    }, remaining)
-
-    return () => clearTimeout(timeoutId)
-  }, [user, expireSession])
+    return () => unsubscribe()
+  }, [])
 
   const loginWithGoogle = useCallback(async () => {
     if (!auth || !googleProvider) {
       throw new Error(firebaseConfigError || 'Firebase is not configured')
     }
 
-    const result = await signInWithPopup(auth, googleProvider)
-    const name = result.user.displayName ?? 'User'
-    const email = result.user.email ?? ''
-    const session = saveSession({ name, email })
-    setUser(session)
-    return session
+    try {
+      await signInWithPopup(auth, googleProvider)
+    } catch (err) {
+      throw err
+    }
   }, [])
 
   const logout = useCallback(async () => {
-    clearSession()
-    setUser(null)
+    clearSession() // keeping this just to clean up any legacy state
     if (auth) {
-      await signOut(auth)
+      try {
+        await signOut(auth)
+      } catch (err) {
+        console.error("Logout error:", err)
+      }
     }
   }, [])
 
@@ -74,7 +58,7 @@ export function AuthProvider({ children }) {
     () => ({
       user,
       isLoading,
-      isAuthenticated: Boolean(user && !isSessionExpired(user.loginAt)),
+      isAuthenticated: Boolean(user),
       loginWithGoogle,
       logout,
       firebaseConfigError,
